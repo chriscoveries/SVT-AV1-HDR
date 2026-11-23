@@ -488,8 +488,12 @@ static EbErrorType set_cfg_fgs_table_path(EbConfig* cfg, const char* token, cons
 static EbErrorType set_cfg_dovi_rpu(EbConfig* cfg, const char* token, const char* value) {
     printf("Svt[info]: Parsing Dolby Vision RPU file...\n");
     const DoviRpuOpaqueList* rpus = dovi_parse_rpu_bin_file(value);
-    if (rpus->error) {
-        fprintf(stderr, "%s\n", rpus->error);
+    if (!rpus) {
+        fprintf(stderr, "Svt[error]: Dolby Vision RPU parser returned no list\n");
+        return validate_error(EB_ErrorBadParameter, token, value);
+    }
+    if (rpus->error || rpus->len == 0 || !rpus->list) {
+        fprintf(stderr, "%s\n", rpus->error ? rpus->error : "Svt[error]: Dolby Vision RPU list is empty");
         dovi_rpu_list_free(rpus);
         return validate_error(EB_ErrorBadParameter, token, value);
     }

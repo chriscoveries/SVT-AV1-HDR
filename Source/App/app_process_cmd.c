@@ -676,11 +676,23 @@ static EbErrorType retrieve_dovi_rpu_for_frame(const DoviRpuOpaqueList* rpus, ui
     if (rpus == NULL) {
         return EB_ErrorNone;
     }
-    if (pic_num > rpus->len - 1) {
-        return EB_ErrorNone;
+    // A provided RPU file promises metadata for every input picture.
+    // len is size_t: using len - 1 underflows when the list is empty.
+    if (!rpus->list || pic_num >= rpus->len || !rpus->list[pic_num]) {
+        fprintf(stderr, "Svt[error]: missing Dolby Vision RPU for input frame %llu (available: %zu)\n",
+                (unsigned long long)pic_num, rpus->len);
+        return EB_ErrorBadParameter;
     }
     DoviRpuOpaque*  rpu         = rpus->list[pic_num];
     const DoviData* rpu_payload = dovi_write_av1_rpu_metadata_obu_t35_complete(rpu);
+    if (!rpu_payload || !rpu_payload->data || rpu_payload->len == 0) {
+        if (rpu_payload) {
+            dovi_data_free(rpu_payload);
+        }
+        fprintf(stderr, "Svt[error]: could not serialize Dolby Vision RPU for input frame %llu\n",
+                (unsigned long long)pic_num);
+        return EB_ErrorBadParameter;
+    }
     if (svt_add_metadata(header_ptr, EB_AV1_METADATA_TYPE_ITUT_T35, rpu_payload->data, rpu_payload->len)) {
         dovi_data_free(rpu_payload);
         return EB_ErrorInsufficientResources;
@@ -805,7 +817,23 @@ void process_input_buffer(EncChannel* channel) {
                 header_ptr->p_app_private = &grain_node;
             }
 #ifdef LIBDOVI_FOUND
-            retrieve_dovi_rpu_for_frame(app_cfg->dovi_rpus, header_ptr->pts, header_ptr);
+            const EbErrorType dovi_status = retrieve_dovi_rpu_for_frame(app_cfg->dovi_rpus, header_ptr->pts, header_ptr);
+            if (dovi_status != EB_ErrorNone) {
+                // Preserve a nonzero CLI status and release resources for
+                // this unsent picture; never claim a truncated DV stream.
+                channel->return_error    = dovi_status;
+                channel->exit_cond_input = APP_ExitConditionError;
+                if (app_cfg->fgs_table.head) {
+                    header_ptr->p_app_private = grain_node.next;
+                }
+                free_private_data_list(header_ptr->p_app_private);
+                header_ptr->p_app_private = NULL;
+                svt_metadata_array_free(&header_ptr->metadata);
+                if (app_cfg->mmap.enable) {
+                    release_memory_mapped_file(app_cfg, is_16bit, header_ptr);
+                }
+                return;
+            }
 #endif
 #ifdef LIBHDR10PLUS_RS_FOUND
             retrieve_hdr10plus_payload_for_frame(app_cfg->hdr10plus_json, header_ptr->pts, header_ptr);
